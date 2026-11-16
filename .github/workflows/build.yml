@@ -39,7 +39,10 @@ jobs:
           cp splash.png resources/splash.png
 
       - name: Paketleri kur
-        run: npm install
+        run: |
+          npm install
+          npm install @capacitor-community/admob @openforge/capacitor-game-connect --legacy-peer-deps || echo "::warning::Reklam/skor eklentileri kurulamadı, eklentisiz devam"
+          npm ls --depth=0 || true
 
       - name: Android projesini oluştur
         run: npx cap add android
@@ -55,17 +58,77 @@ jobs:
           grep -n "windowFullscreen" "$S"
           grep -n "versionCode" android/app/build.gradle
 
+      - name: Reklam ve Play Oyunlar kimlikleri
+        run: |
+          M=android/app/src/main/AndroidManifest.xml
+          sed -i 's#</application>#    <meta-data android:name="com.google.android.gms.ads.APPLICATION_ID" android:value="ca-app-pub-8640887422639341~6538018335"/>\n    <meta-data android:name="com.google.android.gms.games.APP_ID" android:value="@string/game_services_project_id"/>\n  </application>#' "$M"
+          R=android/app/src/main/res/values/strings.xml
+          sed -i 's#</resources>#    <string translatable="false" name="game_services_project_id">761232374239</string>\n</resources>#' "$R"
+          grep -n "APPLICATION_ID\|games.APP_ID" "$M"
+          grep -n "game_services_project_id" "$R"
+
+      - name: Sistem çubuklarını gizle (tam ekran)
+        run: |
+          J=$(find android/app/src/main/java -name MainActivity.java | head -1)
+          PKG=$(grep -m1 '^package' "$J")
+          printf '%s\n' "$PKG" > "$J"
+          cat >> "$J" <<'EOF'
+          import android.os.Build;
+          import android.os.Bundle;
+          import android.view.WindowManager;
+          import androidx.core.view.WindowCompat;
+          import androidx.core.view.WindowInsetsCompat;
+          import androidx.core.view.WindowInsetsControllerCompat;
+          import com.getcapacitor.BridgeActivity;
+
+          public class MainActivity extends BridgeActivity {
+            @Override
+            public void onCreate(Bundle savedInstanceState) {
+              super.onCreate(savedInstanceState);
+              hideBars();
+            }
+
+            @Override
+            public void onWindowFocusChanged(boolean hasFocus) {
+              super.onWindowFocusChanged(hasFocus);
+              if (hasFocus) hideBars();
+            }
+
+            private void hideBars() {
+              WindowCompat.setDecorFitsSystemWindows(getWindow(), false);
+              if (Build.VERSION.SDK_INT >= 28) {
+                WindowManager.LayoutParams lp = getWindow().getAttributes();
+                lp.layoutInDisplayCutoutMode = WindowManager.LayoutParams.LAYOUT_IN_DISPLAY_CUTOUT_MODE_SHORT_EDGES;
+                getWindow().setAttributes(lp);
+              }
+              WindowInsetsControllerCompat c = WindowCompat.getInsetsController(getWindow(), getWindow().getDecorView());
+              c.setSystemBarsBehavior(WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE);
+              c.hide(WindowInsetsCompat.Type.systemBars());
+            }
+          }
+          EOF
+          cat "$J" | head -8
+
       - name: İkon ve açılış ekranı üret
         run: npx capacitor-assets generate --android --iconBackgroundColor '#57c6fe' --iconBackgroundColorDark '#57c6fe' --splashBackgroundColor '#57c6fe' --splashBackgroundColorDark '#57c6fe'
 
-      - name: Senkronize et
-        run: npx cap sync android
-
-      - name: Uygulama paketini derle
-        working-directory: android
+      - name: Senkronize et ve derle (eklenti sorun çıkarırsa eklentisiz dene)
         run: |
-          chmod +x gradlew
-          ./gradlew bundleRelease
+          build() { npx cap sync android && (cd android && chmod +x gradlew && ./gradlew bundleRelease); }
+          if build; then
+            echo "SONUÇ: reklam + skor tablosu ile derlendi"
+          else
+            echo "::warning::Derleme başarısız. Skor tablosu eklentisi çıkarılıp tekrar deneniyor."
+            npm uninstall @openforge/capacitor-game-connect --legacy-peer-deps || true
+            if build; then
+              echo "SONUÇ: reklam var, skor tablosu YOK"
+            else
+              echo "::warning::Yine başarısız. Reklam eklentisi de çıkarılıp tekrar deneniyor."
+              npm uninstall @capacitor-community/admob --legacy-peer-deps || true
+              build
+              echo "SONUÇ: reklam ve skor tablosu YOK (yalnız oyun güncellemeleri)"
+            fi
+          fi
 
       - name: İmzala
         env:
